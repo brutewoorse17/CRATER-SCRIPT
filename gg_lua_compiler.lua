@@ -183,9 +183,17 @@ local function compileWithSecurity(inPath, outPath)
 
   if antiHookEnabled then
     loader = loader
-      .. "local function _anti() local flagged=false if debug and debug.gethook then local h=debug.gethook(); if h then flagged=true end; if debug.sethook then debug.sethook() end; local h2=debug.gethook and debug.gethook() or nil; if h2~=nil then flagged=true end end if debug and debug.getinfo then local li=debug.getinfo(loadstring) if li and li.what~=\"C\" then flagged=true end end if flagged then _log(\"hook_detected\")"
-      .. (exitOnHook and "; gg.alert(\"Hook detected\"); os.exit()" or "")
-      .. " end end\n_anti()\n"
+      .. "local function _anti()\n"
+      .. "  local flagged=false\n"
+      .. "  if debug then\n"
+      .. "    if debug.gethook then local okh,res=pcall(debug.gethook); if okh and res then flagged=true end end\n"
+      .. "    if debug.sethook then pcall(debug.sethook) end\n"
+      .. "    if debug.gethook then local okh2,res2=pcall(debug.gethook); if okh2 and res2 then flagged=true end end\n"
+      .. "    if debug.getinfo then local ok1,info=pcall(debug.getinfo, 1, \"S\"); if ok1 and type(info)==\"table\" and info.what and tostring(info.what)~=\"C\" then flagged=true end end\n"
+      .. "  end\n"
+      .. "  if flagged then _log(\"hook_detected\")" .. (exitOnHook and "; gg.alert(\"Hook detected\"); os.exit()" or "") .. " end\n"
+      .. "end\n"
+      .. "_anti()\n"
   end
 
   loader = loader
