@@ -20,6 +20,26 @@ local function changeExtToLuac(path)
   end
 end
 
+-- Add path helpers for output selection
+local function ensureDirEnd(dir)
+  if not dir or dir == "" then return "" end
+  if dir:sub(-1) ~= "/" then
+    return dir .. "/"
+  end
+  return dir
+end
+
+local function basename(path)
+  if not path then return nil end
+  return path:match("([^/]+)$")
+end
+
+local function joinPath(dir, file)
+  if not dir or dir == "" then return file end
+  dir = ensureDirEnd(dir)
+  return dir .. file
+end
+
 local function compileFile(inPath, outPath)
   if not inPath or inPath == "" then return false, "Input path is empty" end
   if not outPath or outPath == "" then return false, "Output path is empty" end
@@ -40,11 +60,44 @@ end
 local currentScript = gg.getFile()
 local defaultDir = dirname(currentScript) or "/sdcard/"
 
+-- Persistent settings for output selection
+local settingsPath = defaultDir .. "gg_lua_compiler_settings.dat"
+local settings = { useFixedOutputDir = false, outputDir = defaultDir }
+
+local function loadSettings()
+  local ok, data = pcall(gg.loadVariable, settingsPath)
+  if ok and type(data) == "table" then
+    if type(data.useFixedOutputDir) == "boolean" then
+      settings.useFixedOutputDir = data.useFixedOutputDir
+    end
+    if type(data.outputDir) == "string" and data.outputDir ~= "" then
+      settings.outputDir = ensureDirEnd(data.outputDir)
+    end
+  end
+end
+
+local function saveSettings()
+  settings.outputDir = ensureDirEnd(settings.outputDir)
+  pcall(gg.saveVariable, settings, settingsPath)
+end
+
+local function getDefaultOutPath(inPath)
+  if not inPath or inPath == "" then return "" end
+  if settings.useFixedOutputDir and settings.outputDir and settings.outputDir ~= "" then
+    return joinPath(settings.outputDir, changeExtToLuac(basename(inPath)))
+  else
+    return changeExtToLuac(inPath)
+  end
+end
+
+loadSettings()
+
 local function menu()
   return gg.choice({
     "Compile current script",
     "Compile file by path",
     "Batch compile (paste paths)",
+    "Output settings",
     "About",
     "Exit"
   }, nil, "Lua Compiler (GG, Lua 5.1)")
@@ -52,18 +105,18 @@ end
 
 while true do
   local choice = menu()
-  if not choice or choice == 5 then os.exit() end
+  if not choice or choice == 6 then os.exit() end
 
   if choice == 1 then
     if not currentScript then
       gg.alert("Cannot detect current script path.")
       os.exit()
     end
-    local defaultOut = changeExtToLuac(currentScript)
+    local defaultOut = getDefaultOutPath(currentScript)
     local input = gg.prompt({"Input .lua path", "Output .luac path"}, {currentScript, defaultOut}, {"text", "text"})
     if not input then os.exit() end
     local inPath, outPath = input[1], input[2]
-    if not outPath or outPath == "" then outPath = changeExtToLuac(inPath) end
+    if not outPath or outPath == "" then outPath = getDefaultOutPath(inPath) end
     local ok, err = compileFile(inPath, outPath)
     if ok then
       gg.alert("Compiled:\n" .. inPath .. "\n→\n" .. outPath)
@@ -79,7 +132,7 @@ while true do
       gg.alert("Please provide an input file path.")
       os.exit()
     end
-    if not outPath or outPath == "" then outPath = changeExtToLuac(inPath) end
+    if not outPath or outPath == "" then outPath = getDefaultOutPath(inPath) end
     local ok, err = compileFile(inPath, outPath)
     if ok then
       gg.alert("Compiled:\n" .. inPath .. "\n→\n" .. outPath)
@@ -96,7 +149,7 @@ while true do
     for line in (text .. "\n"):gmatch("([^\n]*)\n") do
       local trimmed = line:gsub("^%s+", ""):gsub("%s+$", "")
       if trimmed ~= "" then
-        local outPath = changeExtToLuac(trimmed)
+        local outPath = getDefaultOutPath(trimmed)
         local ok, err = compileFile(trimmed, outPath)
         if ok then
           okCount = okCount + 1
@@ -113,7 +166,38 @@ while true do
     gg.alert(report)
     os.exit()
   elseif choice == 4 then
-    gg.alert("Compiles Lua 5.1 bytecode using string.dump.\n- Target: GameGuardian Lua 5.1\n- Note: Bytecode is version-specific.\n- Tip: Use 'Compile current script' for quick .luac export.")
+    while true do
+      local fixedLabel = settings.useFixedOutputDir and "On" or "Off"
+      local dirLabel = settings.outputDir or "(not set)"
+      local sel = gg.choice({
+        "Toggle fixed output dir (current: " .. fixedLabel .. ")",
+        "Set output directory (current: " .. dirLabel .. ")",
+        "Reset to defaults",
+        "Back"
+      }, nil, "Output settings")
+      if not sel or sel == 4 then break end
+      if sel == 1 then
+        settings.useFixedOutputDir = not settings.useFixedOutputDir
+        saveSettings()
+      elseif sel == 2 then
+        local res = gg.prompt({"Output directory"}, {settings.outputDir}, {"text"})
+        if res then
+          local dir = ensureDirEnd(res[1] or "")
+          if dir == "" then
+            gg.alert("Directory cannot be empty.")
+          else
+            settings.outputDir = dir
+            saveSettings()
+          end
+        end
+      elseif sel == 3 then
+        settings.useFixedOutputDir = false
+        settings.outputDir = defaultDir
+        saveSettings()
+      end
+    end
+  elseif choice == 5 then
+    gg.alert("Compiles Lua 5.1 bytecode using string.dump.\n- Target: GameGuardian Lua 5.1\n- Note: Bytecode is version-specific.\n- Tip: Use 'Compile current script' for quick .luac export.\n- Output: Use Output settings to choose a fixed directory or input folder.")
     os.exit()
   end
 end
