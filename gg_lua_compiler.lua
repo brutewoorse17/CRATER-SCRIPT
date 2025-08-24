@@ -116,6 +116,15 @@ local function toEscapedDecimalString(s)
   return table.concat(t)
 end
 
+-- restore write helper (used when writing loader)
+local function writeFileText(path, content)
+  local f, err = io.open(path, "wb")
+  if not f then return false, tostring(err) end
+  f:write(content)
+  f:close()
+  return true
+end
+
 -- base64 encode (compiler side)
 local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 local function base64Encode(data)
@@ -246,7 +255,6 @@ local function compileWithSecurity(inPath, outPath)
     local b64 = base64Encode(enc)
     local zhList = utf8ToTable(zhAlpha)
     if #zhList ~= 64 then
-      -- fallback to escaped bytes if alphabet invalid
       local escaped = toEscapedDecimalString(enc)
       loader = loader .. "local enc=\"" .. escaped .. "\"\n"
         .. "local dec=xorCipher(enc, key)\n"
@@ -555,9 +563,10 @@ while true do
         "Toggle anti-hook protection (current: " .. ahLabel .. ")",
         "Exit on hook detection (current: " .. ahExitLabel .. ")",
         "Chinese payload encoding (current: " .. cnLabel .. ")",
+        "Apply Revo 6.0 preset",
         "Back"
       }, nil, "Security options")
-      if not sel or sel == 11 then break end
+      if not sel or sel == 12 then break end
       if sel == 1 then
         settings.securityEnabled = not settings.securityEnabled
         if settings.securityEnabled then settings.outputExt = ".lua" end
@@ -589,6 +598,18 @@ while true do
       elseif sel == 10 then
         settings.chineseEncodingEnabled = not settings.chineseEncodingEnabled
         saveSettings()
+      elseif sel == 11 then
+        settings.securityEnabled = true
+        settings.outputExt = ".lua"
+        settings.securityPromptKey = false
+        settings.integrityCheck = true
+        settings.loggingEnabled = true
+        settings.logPath = defaultDir .. "revo_loader.log"
+        settings.antiHookEnabled = true
+        settings.antiHookExitOnDetect = true
+        settings.chineseEncodingEnabled = true
+        saveSettings()
+        gg.toast("Applied Revo 6.0 preset")
       end
     end
   elseif choice == 6 then
