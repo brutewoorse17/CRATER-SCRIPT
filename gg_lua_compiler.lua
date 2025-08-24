@@ -116,12 +116,52 @@ local function toEscapedDecimalString(s)
   return table.concat(t)
 end
 
-local function writeFileText(path, content)
-  local f, err = io.open(path, "wb")
-  if not f then return false, tostring(err) end
-  f:write(content)
-  f:close()
-  return true
+-- base64 encode (compiler side)
+local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local function base64Encode(data)
+  local out = {}
+  local len = #data
+  local i = 1
+  while i <= len do
+    local a = data:byte(i) or 0
+    local b = data:byte(i + 1) or 0
+    local c = data:byte(i + 2) or 0
+    local pad2 = (i + 1 > len)
+    local pad3 = (i + 2 > len)
+    local v0 = math.floor(a / 4)
+    local v1 = ((a % 4) * 16) + math.floor(b / 16)
+    local v2 = ((b % 16) * 4) + math.floor(c / 64)
+    local v3 = c % 64
+    local s0 = B64:sub(v0 + 1, v0 + 1)
+    local s1 = B64:sub(v1 + 1, v1 + 1)
+    local s2 = pad2 and "=" or B64:sub(v2 + 1, v2 + 1)
+    local s3 = pad3 and "=" or B64:sub(v3 + 1, v3 + 1)
+    out[#out + 1] = s0 .. s1 .. s2 .. s3
+    i = i + 3
+  end
+  return table.concat(out)
+end
+
+-- UTF-8 helpers (compiler side)
+local function utf8NextLen(c)
+  if not c then return 0 end
+  if c < 0x80 then return 1 end
+  if c < 0xE0 then return 2 end
+  if c < 0xF0 then return 3 end
+  return 4
+end
+
+local function utf8ToTable(s)
+  local t = {}
+  local i = 1
+  local n = #s
+  while i <= n do
+    local c = s:byte(i)
+    local l = utf8NextLen(c)
+    t[#t + 1] = s:sub(i, i + l - 1)
+    i = i + l
+  end
+  return t
 end
 
 local function compileFile(inPath, outPath)
@@ -160,14 +200,16 @@ local function compileWithSecurity(inPath, outPath)
   local bind = settings.securityBind or ""
   local prompt = settings.securityPromptKey and "true" or "false"
   local integ = settings.integrityCheck and "true" or "false"
-  local escaped = toEscapedDecimalString(enc)
   local loggingEnabled = settings.loggingEnabled and true or false
   local logPath = (settings.logPath and settings.logPath ~= "" and settings.logPath) or "/sdcard/gg_lua_loader.log"
   local antiHookEnabled = settings.antiHookEnabled and true or false
   local exitOnHook = settings.antiHookExitOnDetect and true or false
 
-  local loader = "gg.setVisible(false)\n"
-    .. "local function _log(m) end\n"
+  local useChinese = settings.chineseEncodingEnabled and true or false
+  local zhAlpha = settings.zhAlphabet or "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能下过子说产种面而方后多定学法所民得经十三"
+  local zhPad = settings.zhPad or "。"
+
+  local loader = "gg.setVisible(false)\n" .. "local function _log(m) end\n"
 
   if loggingEnabled then
     loader = loader
@@ -196,22 +238,63 @@ local function compileWithSecurity(inPath, outPath)
       .. "_anti()\n"
   end
 
-  loader = loader
-    .. "if not isAllowed(" .. string.format('%q', bind) .. ") then _log(\"bind_block\"); gg.alert(\"Unauthorized target\"); os.exit() end\n"
+  loader = loader .. "if not isAllowed(" .. string.format('%q', bind) .. ") then _log(\"bind_block\"); gg.alert(\"Unauthorized target\"); os.exit() end\n"
     .. "local key\n"
     .. "if " .. prompt .. " then local r=gg.prompt({\"Enter decryption key\"},{\"\"},{\"text\"}); if not r then os.exit() end key=r[1] or \"\" else key=" .. string.format('%q', key) .. " end\n"
-    .. "local enc=\"" .. escaped .. "\"\n"
-    .. "local dec=xorCipher(enc, key)\n"
-    .. "if " .. integ .. " then if adler32(dec)~=" .. tostring(checksum) .. " then _log(\"integrity_fail\"); gg.alert(\"Integrity check failed\"); os.exit() else _log(\"integrity_ok\") end else _log(\"integrity_skip\") end\n"
-    .. "local fn,err=loadstring(dec)\n"
-    .. "if not fn then _log(\"load_error:\"..tostring(err)); gg.alert(\"Load error: \"..tostring(err)); os.exit() end\n"
-    .. "_log(\"exec_start\")\n"
-    .. "local ok,perr=pcall(fn)\n"
-    .. "if not ok then _log(\"exec_error:\"..tostring(perr)); gg.alert(\"Runtime error: \"..tostring(perr)); os.exit() end\n"
-    .. "_log(\"exec_done\")\n"
-    .. "return\n"
 
-  return writeFileText(outPath, loader)
+  if useChinese then
+    local b64 = base64Encode(enc)
+    local zhList = utf8ToTable(zhAlpha)
+    if #zhList ~= 64 then
+      -- fallback to escaped bytes if alphabet invalid
+      local escaped = toEscapedDecimalString(enc)
+      loader = loader .. "local enc=\"" .. escaped .. "\"\n"
+        .. "local dec=xorCipher(enc, key)\n"
+        .. "if " .. integ .. " then if adler32(dec)~=" .. tostring(checksum) .. " then _log(\"integrity_fail\"); gg.alert(\"Integrity check failed\"); os.exit() else _log(\"integrity_ok\") end else _log(\"integrity_skip\") end\n"
+        .. "local fn,err=loadstring(dec)\n"
+        .. "if not fn then _log(\"load_error:\"..tostring(err)); gg.alert(\"Load error: \"..tostring(err)); os.exit() end\n"
+        .. "_log(\"exec_start\")\nlocal ok,perr=pcall(fn)\nif not ok then _log(\"exec_error:\"..tostring(perr)); gg.alert(\"Runtime error: \"..tostring(perr)); os.exit() end\n_log(\"exec_done\")\nreturn\n"
+      return writeFileText(outPath, loader)
+    end
+    local asciiIndex = {}
+    for i = 1, #B64 do asciiIndex[B64:sub(i,i)] = i - 1 end
+    local encZhParts = {}
+    for i = 1, #b64 do
+      local ch = b64:sub(i,i)
+      if ch == "=" then
+        encZhParts[#encZhParts + 1] = zhPad
+      else
+        local idx = asciiIndex[ch]
+        encZhParts[#encZhParts + 1] = zhList[idx + 1]
+      end
+    end
+    local encZh = table.concat(encZhParts)
+    loader = loader
+      .. "local ZH_ALPHA=\"" .. zhAlpha .. "\"\n"
+      .. "local ZH_PAD=\"" .. zhPad .. "\"\n"
+      .. "local function _u8n(c) if c<128 then return 1 elseif c<224 then return 2 elseif c<240 then return 3 else return 4 end end\n"
+      .. "local function _u8iter(s) local i=1 local n=#s return function() if i>n then return nil end local c=s:byte(i) local l=_u8n(c) local ch=s:sub(i,i+l-1) i=i+l return ch end end\n"
+      .. "local function _buildIdx(alpha) local m={} local i=0 for ch in _u8iter(alpha) do m[ch]=i i=i+1 end return m end\n"
+      .. "local _IDX=_buildIdx(ZH_ALPHA)\n"
+      .. "local function _zh_b64_decode(z) local out={} local vals={} local vi=0 local pad=-1 local function push(v) vi=vi+1 vals[vi]=v if vi==4 then local v0,v1,v2,v3=vals[1],vals[2],vals[3],vals[4] local b1= v0*4 + math.floor(v1/16) local b2= ((v1%16)*16) + math.floor((v2<0 and 0 or v2)/4) local b3= (( (v2<0 and 0 or v2)%4)*64) + (v3<0 and 0 or v3) if v2<0 then out[#out+1]=string.char(b1) elseif v3<0 then out[#out+1]=string.char(b1,b2) else out[#out+1]=string.char(b1,b2,b3) end vi=0 end end for ch in _u8iter(z) do if ch==ZH_PAD then push(-1) else local v=_IDX[ch]; if v==nil then else push(v) end end end if vi>0 then while vi<4 do push(-1) end end return table.concat(out) end\n"
+      .. "local enc_zh=\"" .. encZh .. "\"\n"
+      .. "local enc=_zh_b64_decode(enc_zh)\n"
+      .. "local dec=xorCipher(enc, key)\n"
+      .. "if " .. integ .. " then if adler32(dec)~=" .. tostring(checksum) .. " then _log(\"integrity_fail\"); gg.alert(\"Integrity check failed\"); os.exit() else _log(\"integrity_ok\") end else _log(\"integrity_skip\") end\n"
+      .. "local fn,err=loadstring(dec)\n"
+      .. "if not fn then _log(\"load_error:\"..tostring(err)); gg.alert(\"Load error: \"..tostring(err)); os.exit() end\n"
+      .. "_log(\"exec_start\")\nlocal ok,perr=pcall(fn)\nif not ok then _log(\"exec_error:\"..tostring(perr)); gg.alert(\"Runtime error: \"..tostring(perr)); os.exit() end\n_log(\"exec_done\")\nreturn\n"
+    return writeFileText(outPath, loader)
+  else
+    local escaped = toEscapedDecimalString(enc)
+    loader = loader .. "local enc=\"" .. escaped .. "\"\n"
+      .. "local dec=xorCipher(enc, key)\n"
+      .. "if " .. integ .. " then if adler32(dec)~=" .. tostring(checksum) .. " then _log(\"integrity_fail\"); gg.alert(\"Integrity check failed\"); os.exit() else _log(\"integrity_ok\") end else _log(\"integrity_skip\") end\n"
+      .. "local fn,err=loadstring(dec)\n"
+      .. "if not fn then _log(\"load_error:\"..tostring(err)); gg.alert(\"Load error: \"..tostring(err)); os.exit() end\n"
+      .. "_log(\"exec_start\")\nlocal ok,perr=pcall(fn)\nif not ok then _log(\"exec_error:\"..tostring(perr)); gg.alert(\"Runtime error: \"..tostring(perr)); os.exit() end\n_log(\"exec_done\")\nreturn\n"
+    return writeFileText(outPath, loader)
+  end
 end
 
 local currentScript = gg.getFile()
@@ -234,7 +317,11 @@ settings = {
   logPath = defaultDir .. "gg_lua_loader.log",
   -- anti-hook
   antiHookEnabled = false,
-  antiHookExitOnDetect = true
+  antiHookExitOnDetect = true,
+  -- chinese encoding
+  chineseEncodingEnabled = false,
+  zhAlphabet = "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能下过子说产种面而方后多定学法所民得经十三",
+  zhPad = "。"
 }
 
 local function loadSettings()
@@ -275,6 +362,15 @@ local function loadSettings()
     end
     if type(data.antiHookExitOnDetect) == "boolean" then
       settings.antiHookExitOnDetect = data.antiHookExitOnDetect
+    end
+    if type(data.chineseEncodingEnabled) == "boolean" then
+      settings.chineseEncodingEnabled = data.chineseEncodingEnabled
+    end
+    if type(data.zhAlphabet) == "string" and data.zhAlphabet ~= "" then
+      settings.zhAlphabet = data.zhAlphabet
+    end
+    if type(data.zhPad) == "string" and data.zhPad ~= "" then
+      settings.zhPad = data.zhPad
     end
   end
 end
@@ -446,6 +542,7 @@ while true do
       local logLabel = settings.loggingEnabled and "On" or "Off"
       local ahLabel = settings.antiHookEnabled and "On" or "Off"
       local ahExitLabel = settings.antiHookExitOnDetect and "On" or "Off"
+      local cnLabel = settings.chineseEncodingEnabled and "On" or "Off"
       local keyLabel = (settings.securityKey ~= "" and ("*" .. string.rep("*", math.min(6, #settings.securityKey - 1)))) or "(not set)"
       local sel = gg.choice({
         "Toggle security pack (current: " .. secOn .. ")",
@@ -457,9 +554,10 @@ while true do
         "Set log path (current: " .. (settings.logPath or "(not set)") .. ")",
         "Toggle anti-hook protection (current: " .. ahLabel .. ")",
         "Exit on hook detection (current: " .. ahExitLabel .. ")",
+        "Chinese payload encoding (current: " .. cnLabel .. ")",
         "Back"
       }, nil, "Security options")
-      if not sel or sel == 10 then break end
+      if not sel or sel == 11 then break end
       if sel == 1 then
         settings.securityEnabled = not settings.securityEnabled
         if settings.securityEnabled then settings.outputExt = ".lua" end
@@ -488,10 +586,13 @@ while true do
       elseif sel == 9 then
         settings.antiHookExitOnDetect = not settings.antiHookExitOnDetect
         saveSettings()
+      elseif sel == 10 then
+        settings.chineseEncodingEnabled = not settings.chineseEncodingEnabled
+        saveSettings()
       end
     end
   elseif choice == 6 then
-    gg.alert("Compiles Lua 5.1 bytecode using string.dump.\n- Target: GameGuardian Lua 5.1\n- Security: XOR packing, optional password prompt, integrity check, bind, anti-hook, logging.\n- Output dir: Choose fixed or input folder.\n- Output ext: Toggle .lua/.luac (security forces .lua).\n- Override: Set a custom output filename per compile.")
+    gg.alert("Compiles Lua 5.1 bytecode using string.dump.\n- Target: GameGuardian Lua 5.1\n- Security: XOR pack, optional password prompt, integrity check, bind, anti-hook, logging.\n- Payload encoding: ASCII bytes or Chinese Base64 mapping.\n- Output dir: Choose fixed or input folder.\n- Output ext: Toggle .lua/.luac (security forces .lua).\n- Override: Custom output filename per compile.")
     os.exit()
   end
 end
