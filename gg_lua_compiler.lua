@@ -161,21 +161,47 @@ local function compileWithSecurity(inPath, outPath)
   local prompt = settings.securityPromptKey and "true" or "false"
   local integ = settings.integrityCheck and "true" or "false"
   local escaped = toEscapedDecimalString(enc)
+  local loggingEnabled = settings.loggingEnabled and true or false
+  local logPath = (settings.logPath and settings.logPath ~= "" and settings.logPath) or "/sdcard/gg_lua_loader.log"
+  local antiHookEnabled = settings.antiHookEnabled and true or false
+  local exitOnHook = settings.antiHookExitOnDetect and true or false
 
   local loader = "gg.setVisible(false)\n"
+    .. "local function _log(m) end\n"
+
+  if loggingEnabled then
+    loader = loader
+      .. "_log=function(m) local p=" .. string.format('%q', logPath) .. " local ok,f=pcall(io.open,p,\"a\") if not ok or not f then return end local ts=os.date(\"%Y-%m-%d %H:%M:%S\") f:write(\"[\"..ts..\"] \"..tostring(m)..\"\\n\") f:close() end\n"
+  end
+
+  loader = loader .. "_log(\"loader_start\")\n"
+    .. "do local ok,info=pcall(gg.getTargetInfo); if ok and type(info)==\"table\" then _log(\"target:\"..tostring(info.processName or info.packageName or \"\")) end end\n"
     .. "local function bxor(a,b) local r=0; local p=1; while a>0 or b>0 do local aa=a%2; local bb=b%2; if aa~=bb then r=r+p end; a=(a-aa)/2; b=(b-bb)/2; p=p*2 end; return r end\n"
     .. "local function xorCipher(s,k) if not k or k==\"\" then return s end local o={} local kl=#k for i=1,#s do o[i]=string.char(bxor(s:byte(i), k:byte(((i-1)%kl)+1))) end return table.concat(o) end\n"
     .. "local function adler32(s) local a=1 local b=0 for i=1,#s do a=(a+s:byte(i))%65521 b=(b+a)%65521 end return b*65536 + a end\n"
     .. "local function isAllowed(bind) if not bind or bind==\"\" then return true end local ok,info=pcall(gg.getTargetInfo) if ok and type(info)==\"table\" then local name=info.packageName or info.processName or info.label or \"\" return name:find(bind,1,true)~=nil end return true end\n"
-    .. "if not isAllowed(" .. string.format('%q', bind) .. ") then gg.alert(\"Unauthorized target\"); os.exit() end\n"
+
+  if antiHookEnabled then
+    loader = loader
+      .. "local function _anti() local flagged=false if debug and debug.gethook then local h=debug.gethook(); if h then flagged=true end; if debug.sethook then debug.sethook() end; local h2=debug.gethook and debug.gethook() or nil; if h2~=nil then flagged=true end end if debug and debug.getinfo then local li=debug.getinfo(loadstring) if li and li.what~=\"C\" then flagged=true end end if flagged then _log(\"hook_detected\")"
+      .. (exitOnHook and "; gg.alert(\"Hook detected\"); os.exit()" or "")
+      .. " end end\n_anti()\n"
+  end
+
+  loader = loader
+    .. "if not isAllowed(" .. string.format('%q', bind) .. ") then _log(\"bind_block\"); gg.alert(\"Unauthorized target\"); os.exit() end\n"
     .. "local key\n"
     .. "if " .. prompt .. " then local r=gg.prompt({\"Enter decryption key\"},{\"\"},{\"text\"}); if not r then os.exit() end key=r[1] or \"\" else key=" .. string.format('%q', key) .. " end\n"
     .. "local enc=\"" .. escaped .. "\"\n"
     .. "local dec=xorCipher(enc, key)\n"
-    .. "if " .. integ .. " and adler32(dec)~=" .. tostring(checksum) .. " then gg.alert(\"Integrity check failed\"); os.exit() end\n"
+    .. "if " .. integ .. " then if adler32(dec)~=" .. tostring(checksum) .. " then _log(\"integrity_fail\"); gg.alert(\"Integrity check failed\"); os.exit() else _log(\"integrity_ok\") end else _log(\"integrity_skip\") end\n"
     .. "local fn,err=loadstring(dec)\n"
-    .. "if not fn then gg.alert(\"Load error: \"..tostring(err)); os.exit() end\n"
-    .. "return fn()\n"
+    .. "if not fn then _log(\"load_error:\"..tostring(err)); gg.alert(\"Load error: \"..tostring(err)); os.exit() end\n"
+    .. "_log(\"exec_start\")\n"
+    .. "local ok,perr=pcall(fn)\n"
+    .. "if not ok then _log(\"exec_error:\"..tostring(perr)); gg.alert(\"Runtime error: \"..tostring(perr)); os.exit() end\n"
+    .. "_log(\"exec_done\")\n"
+    .. "return\n"
 
   return writeFileText(outPath, loader)
 end
@@ -194,7 +220,13 @@ settings = {
   securityPromptKey = false,
   securityKey = "",
   securityBind = "",
-  integrityCheck = true
+  integrityCheck = true,
+  -- logging
+  loggingEnabled = false,
+  logPath = defaultDir .. "gg_lua_loader.log",
+  -- anti-hook
+  antiHookEnabled = false,
+  antiHookExitOnDetect = true
 }
 
 local function loadSettings()
@@ -223,6 +255,18 @@ local function loadSettings()
     end
     if type(data.integrityCheck) == "boolean" then
       settings.integrityCheck = data.integrityCheck
+    end
+    if type(data.loggingEnabled) == "boolean" then
+      settings.loggingEnabled = data.loggingEnabled
+    end
+    if type(data.logPath) == "string" and data.logPath ~= "" then
+      settings.logPath = data.logPath
+    end
+    if type(data.antiHookEnabled) == "boolean" then
+      settings.antiHookEnabled = data.antiHookEnabled
+    end
+    if type(data.antiHookExitOnDetect) == "boolean" then
+      settings.antiHookExitOnDetect = data.antiHookExitOnDetect
     end
   end
 end
@@ -391,6 +435,9 @@ while true do
       local promptLabel = settings.securityPromptKey and "On" or "Off"
       local bindLabel = (settings.securityBind ~= "" and settings.securityBind) or "(none)"
       local integLabel = settings.integrityCheck and "On" or "Off"
+      local logLabel = settings.loggingEnabled and "On" or "Off"
+      local ahLabel = settings.antiHookEnabled and "On" or "Off"
+      local ahExitLabel = settings.antiHookExitOnDetect and "On" or "Off"
       local keyLabel = (settings.securityKey ~= "" and ("*" .. string.rep("*", math.min(6, #settings.securityKey - 1)))) or "(not set)"
       local sel = gg.choice({
         "Toggle security pack (current: " .. secOn .. ")",
@@ -398,9 +445,13 @@ while true do
         "Toggle prompt for key at runtime (current: " .. promptLabel .. ")",
         "Set process/package bind (current: " .. bindLabel .. ")",
         "Toggle integrity check (current: " .. integLabel .. ")",
+        "Toggle logging (current: " .. logLabel .. ")",
+        "Set log path (current: " .. (settings.logPath or "(not set)") .. ")",
+        "Toggle anti-hook protection (current: " .. ahLabel .. ")",
+        "Exit on hook detection (current: " .. ahExitLabel .. ")",
         "Back"
       }, nil, "Security options")
-      if not sel or sel == 6 then break end
+      if not sel or sel == 10 then break end
       if sel == 1 then
         settings.securityEnabled = not settings.securityEnabled
         if settings.securityEnabled then settings.outputExt = ".lua" end
@@ -417,10 +468,22 @@ while true do
       elseif sel == 5 then
         settings.integrityCheck = not settings.integrityCheck
         saveSettings()
+      elseif sel == 6 then
+        settings.loggingEnabled = not settings.loggingEnabled
+        saveSettings()
+      elseif sel == 7 then
+        local res = gg.prompt({"Log file path"}, {settings.logPath}, {"text"})
+        if res and res[1] and res[1] ~= "" then settings.logPath = res[1]; saveSettings() end
+      elseif sel == 8 then
+        settings.antiHookEnabled = not settings.antiHookEnabled
+        saveSettings()
+      elseif sel == 9 then
+        settings.antiHookExitOnDetect = not settings.antiHookExitOnDetect
+        saveSettings()
       end
     end
   elseif choice == 6 then
-    gg.alert("Compiles Lua 5.1 bytecode using string.dump.\n- Target: GameGuardian Lua 5.1\n- Security: Optional XOR packing, password prompt, integrity, and package bind.\n- Output dir: Choose fixed or input folder.\n- Output ext: Toggle .lua/.luac (security forces .lua).\n- Override: Set a custom output filename per compile.")
+    gg.alert("Compiles Lua 5.1 bytecode using string.dump.\n- Target: GameGuardian Lua 5.1\n- Security: XOR packing, optional password prompt, integrity check, bind, anti-hook, logging.\n- Output dir: Choose fixed or input folder.\n- Output ext: Toggle .lua/.luac (security forces .lua).\n- Override: Set a custom output filename per compile.")
     os.exit()
   end
 end
