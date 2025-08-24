@@ -6,6 +6,9 @@ gg.setVisible(false)
 
 gg.toast('Lua Compiler ready')
 
+-- forward declare settings so helper functions can capture the local
+local settings
+
 local function dirname(path)
   if not path then return nil end
   return path:match("(.*/)")
@@ -40,22 +43,33 @@ local function joinPath(dir, file)
   return dir .. file
 end
 
-local function ensureLuacFilename(name)
-  if not name or name == "" then return "" end
-  local lower = name:lower()
-  if lower:sub(-5) == ".luac" then return name end
-  if lower:sub(-4) == ".lua" then return name:sub(1, -5) .. ".luac" end
-  return name .. ".luac"
+-- normalize any name or path to current output extension
+local function normalizeExtToTarget(nameOrPath)
+  if not nameOrPath or nameOrPath == "" then return "" end
+  local lower = nameOrPath:lower()
+  local withoutExt
+  if lower:sub(-5) == ".luac" then
+    withoutExt = nameOrPath:sub(1, -6)
+  elseif lower:sub(-4) == ".lua" then
+    withoutExt = nameOrPath:sub(1, -5)
+  else
+    withoutExt = nameOrPath
+  end
+  return withoutExt .. (settings and settings.outputExt or ".lua")
+end
+
+local function ensureOutputFilename(name)
+  return normalizeExtToTarget(name)
 end
 
 local function buildOutPathWithOverride(inPath, overrideName)
   local dir
-  if settings.useFixedOutputDir and settings.outputDir and settings.outputDir ~= "" then
+  if settings and settings.useFixedOutputDir and settings.outputDir and settings.outputDir ~= "" then
     dir = settings.outputDir
   else
     dir = dirname(inPath) or "/sdcard/"
   end
-  return joinPath(dir, ensureLuacFilename(overrideName))
+  return joinPath(dir, ensureOutputFilename(overrideName))
 end
 
 local function compileFile(inPath, outPath)
@@ -80,7 +94,7 @@ local defaultDir = dirname(currentScript) or "/sdcard/"
 
 -- Persistent settings for output selection
 local settingsPath = defaultDir .. "gg_lua_compiler_settings.dat"
-local settings = { useFixedOutputDir = false, outputDir = defaultDir }
+settings = { useFixedOutputDir = false, outputDir = defaultDir, outputExt = ".lua" }
 
 local function loadSettings()
   local ok, data = pcall(gg.loadVariable, settingsPath)
@@ -90,6 +104,9 @@ local function loadSettings()
     end
     if type(data.outputDir) == "string" and data.outputDir ~= "" then
       settings.outputDir = ensureDirEnd(data.outputDir)
+    end
+    if type(data.outputExt) == "string" and (data.outputExt == ".lua" or data.outputExt == ".luac") then
+      settings.outputExt = data.outputExt
     end
   end
 end
@@ -102,9 +119,9 @@ end
 local function getDefaultOutPath(inPath)
   if not inPath or inPath == "" then return "" end
   if settings.useFixedOutputDir and settings.outputDir and settings.outputDir ~= "" then
-    return joinPath(settings.outputDir, changeExtToLuac(basename(inPath)))
+    return joinPath(settings.outputDir, normalizeExtToTarget(basename(inPath)))
   else
-    return changeExtToLuac(inPath)
+    return normalizeExtToTarget(inPath)
   end
 end
 
@@ -131,7 +148,7 @@ while true do
       os.exit()
     end
     local defaultOut = getDefaultOutPath(currentScript)
-    local input = gg.prompt({"Input .lua path", "Output .luac path (optional)", "Override output filename (optional)"}, {currentScript, defaultOut, ""}, {"text", "text", "text"})
+    local input = gg.prompt({"Input .lua path", "Output path (optional)", "Override output filename (optional)"}, {currentScript, defaultOut, ""}, {"text", "text", "text"})
     if not input then os.exit() end
     local inPath, outPath, overrideName = input[1], input[2], input[3]
     if not outPath or outPath == "" then
@@ -140,6 +157,8 @@ while true do
       else
         outPath = getDefaultOutPath(inPath)
       end
+    else
+      outPath = normalizeExtToTarget(outPath)
     end
     local ok, err = compileFile(inPath, outPath)
     if ok then
@@ -149,7 +168,7 @@ while true do
     end
     os.exit()
   elseif choice == 2 then
-    local input = gg.prompt({"Input .lua path", "Output .luac path (optional)", "Override output filename (optional)"}, {defaultDir, "", ""}, {"text", "text", "text"})
+    local input = gg.prompt({"Input .lua path", "Output path (optional)", "Override output filename (optional)"}, {defaultDir, "", ""}, {"text", "text", "text"})
     if not input then os.exit() end
     local inPath, outPath, overrideName = input[1], input[2], input[3]
     if not inPath or inPath == "" then
@@ -162,6 +181,8 @@ while true do
       else
         outPath = getDefaultOutPath(inPath)
       end
+    else
+      outPath = normalizeExtToTarget(outPath)
     end
     local ok, err = compileFile(inPath, outPath)
     if ok then
@@ -202,12 +223,13 @@ while true do
       local sel = gg.choice({
         "Toggle fixed output dir (current: " .. fixedLabel .. ")",
         "Set output directory (current: " .. dirLabel .. ")",
+        "Toggle output extension (current: " .. settings.outputExt .. ")",
         "Use current script directory",
         "Set directory from a file path",
         "Reset to defaults",
         "Back"
       }, nil, "Output settings")
-      if not sel or sel == 6 then break end
+      if not sel or sel == 7 then break end
       if sel == 1 then
         settings.useFixedOutputDir = not settings.useFixedOutputDir
         saveSettings()
@@ -223,12 +245,15 @@ while true do
           end
         end
       elseif sel == 3 then
-        settings.outputDir = defaultDir
+        settings.outputExt = (settings.outputExt == ".lua") and ".luac" or ".lua"
         saveSettings()
       elseif sel == 4 then
-        local res = gg.prompt({"Enter any file path inside desired folder"}, {defaultDir}, {"text"})
-        if res and res[1] and res[1] ~= "" then
-          local dir = dirname(res[1])
+        settings.outputDir = defaultDir
+        saveSettings()
+      elseif sel == 5 then
+        local res2 = gg.prompt({"Enter any file path inside desired folder"}, {defaultDir}, {"text"})
+        if res2 and res2[1] and res2[1] ~= "" then
+          local dir = dirname(res2[1])
           if dir and dir ~= "" then
             settings.outputDir = ensureDirEnd(dir)
             saveSettings()
@@ -236,14 +261,15 @@ while true do
             gg.alert("Could not derive directory from that path.")
           end
         end
-      elseif sel == 5 then
+      elseif sel == 6 then
         settings.useFixedOutputDir = false
         settings.outputDir = defaultDir
+        settings.outputExt = ".lua"
         saveSettings()
       end
     end
   elseif choice == 5 then
-    gg.alert("Compiles Lua 5.1 bytecode using string.dump.\n- Target: GameGuardian Lua 5.1\n- Note: Bytecode is version-specific.\n- Tip: Use 'Compile current script' for quick .luac export.\n- Output: Use Output settings to choose a fixed directory or input folder.\n- Override: You can set a custom output filename per compile.")
+    gg.alert("Compiles Lua 5.1 bytecode using string.dump.\n- Target: GameGuardian Lua 5.1\n- Note: Bytecode is version-specific.\n- Tip: Use 'Compile current script' for quick export.\n- Output dir: Choose fixed or input folder.\n- Output ext: Toggle between .lua and .luac.\n- Override: Set a custom output filename per compile.")
     os.exit()
   end
 end
