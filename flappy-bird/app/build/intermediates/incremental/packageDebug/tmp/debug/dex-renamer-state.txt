@@ -1,0 +1,7 @@
+#Mon Aug 25 15:14:52 UTC 2025
+base.0=/workspace/flappy-bird/app/build/intermediates/dex/debug/mergeProjectDexDebug/0/classes.dex
+base.1=/workspace/flappy-bird/app/build/intermediates/dex/debug/mergeProjectDexDebug/15/classes.dex
+path.0=0/classes.dex
+path.1=15/classes.dex
+renamed.0=classes.dex
+renamed.1=classes2.dex
